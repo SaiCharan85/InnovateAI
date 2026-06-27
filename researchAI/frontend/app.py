@@ -307,6 +307,7 @@ def main():
                         "role": "assistant",
                         "content": response["response"],
                         "sources": response.get("sources", []),
+                        "related_items": response.get("related_items", []),
                         "topic_graph": build_topic_graph(query, response.get("sources", [])),
                         "metrics": response.get("metrics", {}),
                         "bias_report": response.get("bias_report", {}),

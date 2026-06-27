@@ -87,8 +87,23 @@ def display_message(message: Dict[str, Any]):
             sources = message.get("sources", [])
             if sources:
                 st.caption(f"Supporting sources: {len(sources)}")
+                for source in sources[:3]:
+                    with st.container():
+                        st.markdown(
+                            f"<div style='border-left:4px solid #1976D2; padding-left:0.6rem; margin:0.4rem 0;'>"
+                            f"<b>{source.get('title', 'Untitled source')}</b><br/>"
+                            f"<span style='color:gray;'>{source.get('source', 'Unknown')} • {source.get('date', 'N/A')}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
             if not sources:
                 st.caption("No supporting sources were returned for this response.")
+
+            related_items = message.get("related_items", [])
+            if related_items:
+                with st.expander("🔗 Related Papers / News", expanded=False):
+                    for item in related_items:
+                        st.markdown(f"- **{item.get('title', 'Untitled')}** — {item.get('source', 'Unknown')}")
             if sources:
                 with st.expander(f"📚 Sources ({len(sources)})", expanded=False):
                     for source in sources:
