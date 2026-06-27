@@ -1,6 +1,7 @@
 """
 Streamlit Frontend for Tech Trends RAG Application
 """
+import re
 import streamlit as st
 from datetime import datetime
 import os
@@ -187,6 +188,34 @@ def save_session():
     except Exception as e:
         pass  # Silently fail
 
+def build_topic_graph(query: str, sources: list | None = None) -> dict:
+    """Build a simple topic graph structure for the chat UI."""
+    cleaned_query = re.sub(r"[^a-z0-9]+", " ", query.lower()).strip()
+    keywords = [word for word in cleaned_query.split() if len(word) > 2][:4]
+    if not keywords:
+        keywords = ["research", "topic"]
+
+    center_topic = keywords[0]
+    related_topics = keywords[1:3]
+    nodes = [{"id": center_topic, "label": center_topic, "group": "center"}]
+    edges = []
+
+    for topic in related_topics:
+        nodes.append({"id": topic, "label": topic, "group": "related"})
+        edges.append({"source": center_topic, "target": topic, "weight": 1})
+
+    if sources:
+        for source in sources[:2]:
+            source_title = str(source.get("title", "")).strip()
+            if source_title:
+                label = source_title.split()[0][:12]
+                node_id = f"source_{label.lower()}"
+                nodes.append({"id": node_id, "label": label, "group": "source"})
+                edges.append({"source": center_topic, "target": node_id, "weight": 1})
+
+    return {"center_topic": center_topic, "nodes": nodes, "edges": edges}
+
+
 def main():
     """Main application"""
     init_session_state()
@@ -278,6 +307,7 @@ def main():
                         "role": "assistant",
                         "content": response["response"],
                         "sources": response.get("sources", []),
+                        "topic_graph": build_topic_graph(query, response.get("sources", [])),
                         "metrics": response.get("metrics", {}),
                         "bias_report": response.get("bias_report", {}),
                         "validation": response.get("validation", {}),

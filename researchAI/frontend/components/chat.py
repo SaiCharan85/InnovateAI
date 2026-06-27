@@ -1,11 +1,66 @@
+import math
 import streamlit as st
 from datetime import datetime
 from typing import Dict, Any
+import plotly.graph_objects as go
 
 def render_chat_interface():
     st.header("💬 Chat")
     st.caption("Start a conversation and inspect the supporting sources below each answer.")
     st.caption("Follow up with a narrower question to refine the results.")
+
+def render_topic_graph(graph_data: Dict[str, Any]):
+    """Render a lightweight topic graph preview for the current answer."""
+    nodes = graph_data.get("nodes", [])
+    edges = graph_data.get("edges", [])
+    if not nodes:
+        return
+
+    fig = go.Figure()
+    node_ids = [node["id"] for node in nodes]
+    for index, node in enumerate(nodes):
+        angle = (2 * math.pi * index) / max(len(nodes), 1)
+        x = math.cos(angle)
+        y = math.sin(angle)
+        fig.add_trace(go.Scatter(
+            x=[x],
+            y=[y],
+            mode="markers+text",
+            text=[node.get("label", node["id"])],
+            textposition="top center",
+            marker=dict(size=22, color="#1976D2" if node.get("group") == "center" else "#43A047"),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
+    for edge in edges:
+        source = edge.get("source")
+        target = edge.get("target")
+        if source not in node_ids or target not in node_ids:
+            continue
+        source_index = node_ids.index(source)
+        target_index = node_ids.index(target)
+        src_x = math.cos((2 * math.pi * source_index) / max(len(nodes), 1))
+        src_y = math.sin((2 * math.pi * source_index) / max(len(nodes), 1))
+        tgt_x = math.cos((2 * math.pi * target_index) / max(len(nodes), 1))
+        tgt_y = math.sin((2 * math.pi * target_index) / max(len(nodes), 1))
+        fig.add_trace(go.Scatter(
+            x=[src_x, tgt_x],
+            y=[src_y, tgt_y],
+            mode="lines",
+            line=dict(color="#90A4AE", width=1.5),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=20, b=20),
+        height=220,
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 
 def display_message(message: Dict[str, Any]):
     """
@@ -45,6 +100,11 @@ def display_message(message: Dict[str, Any]):
                         else:
                             st.caption(f"{source['source']} - {source.get('date', 'Date N/A')}")
             
+            topic_graph = message.get("topic_graph")
+            if topic_graph:
+                with st.expander("🕸️ Topic Graph", expanded=False):
+                    render_topic_graph(topic_graph)
+
             # Display performance metrics if available (NEW SECTION)
             metrics = message.get("metrics", {})
             response_time = message.get("response_time", 0)

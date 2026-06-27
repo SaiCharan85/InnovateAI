@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import re
 
 
@@ -20,6 +20,19 @@ class MCPToolService:
         if not query_terms:
             return documents
 
+        research_terms = {
+            "paper",
+            "papers",
+            "research",
+            "survey",
+            "benchmark",
+            "method",
+            "literature",
+            "citation",
+            "review",
+        }
+        is_research_query = any(term in research_terms for term in query_terms)
+
         results: List[Dict[str, Any]] = []
         for document in documents:
             text_parts = [
@@ -37,6 +50,8 @@ class MCPToolService:
             research_boost = 0
             if document.get("topic") == "research" or "paper" in text or "research" in text:
                 research_boost = 1
+            if is_research_query and document.get("topic") == "research":
+                research_boost += 1
 
             if score or research_boost:
                 results.append({**document, "match_score": score + research_boost})
