@@ -1,0 +1,145 @@
+name: Sync Cloud Composer
+
+on:
+  push: 
+    branches:
+      - main
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  syncCloudComposer:
+    name: sync with Cloud Composer
+    runs-on: ubuntu-latest
+    environment: mlops
+
+    env:
+      PYTHON_VERSION: '3.11'
+      COMPOSER_ENV: "rag-environment"
+      COMPOSER_REGION: "us-east1"   # e.g. us-central1
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    # Step 1 — Authenticate using service account key
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_DVC_KEY }}
+
+    - name: Set up gcloud CLI
+      uses: google-github-actions/setup-gcloud@v2
+    
+    - name: set the secrets
+      run: |
+        cd researchAI/dags/common/config
+        echo "news_api: \"${{ secrets.NEWS_API }}\"" > secrets.yaml
+        echo "HF_API: \"${{ secrets.HF_API }}\"" >> secrets.yaml
+        echo " \"${{ secrets.EMAIL_SENDER_PASSWORD }}\"" >> email_config.yaml
+
+    # Step 2 — Fetch the Composer bucket name dynamically
+    - name: Get Composer DAG bucket prefix
+      id: composer
+      run: |
+        BUCKET_PREFIX=$(gcloud composer environments describe "$COMPOSER_ENV" \
+          --location "$COMPOSER_REGION" \
+          --format="value(config.dagGcsPrefix)")
+        
+        # Extract just bucket name (gs://bucket-name)
+        echo "BUCKET_PREFIX=$BUCKET_PREFIX" >> $GITHUB_ENV
+
+        # Also extract raw bucket name for convenience
+        RAW_BUCKET=$(echo $BUCKET_PREFIX | sed 's|gs://||' | cut -d'/' -f1)
+        echo "BUCKET_NAME=$RAW_BUCKET" >> $GITHUB_ENV
+
+        echo "Composer bucket: $BUCKET_PREFIX"
+        echo "Raw bucket name: $RAW_BUCKET"
+      continue-on-error: false
+
+    # Step 3 — Sync folders from the bucket → GitHub runner
+    - name: Sync DAGs folder
+      run: |
+        mkdir -p composer_sync/dags
+        gsutil -m rsync -r "$BUCKET_PREFIX" composer_sync/dags
+
+    - name: Sync Data folder
+      run: |
+        mkdir -p composer_sync/data
+        gsutil -m rsync -r "gs://$BUCKET_NAME/data" composer_sync/data
+
+    - name: Show synced files
+      run: ls -R composer_sync
+
+    # Step 4 — Delete existing DAGs from Composer bucket
+    - name: Delete existing DAGs from Cloud Composer bucket
+      run: |
+        echo "Deleting existing DAGs from gs://$BUCKET_NAME/dags ..."
+        gsutil -m rm -r "gs://$BUCKET_NAME/dags/*" || true
+    
+    # Step 5 — Copy files from GitHub runner → Composer bucket
+    - name: Copy dags to Cloud Composer bucket
+      run: |
+        cp composer_sync/dags/airflow_monitoring.py researchAI/dags/
+        gsutil -m rsync -r researchAI/dags "gs://$BUCKET_NAME/dags"
+    
+    # Step 6 — Pull data files using DVC
+    - name: dvc install
+      run: |
+        pip install dvc[gs]
+    
+    - name: Set up GCP credentials
+      run: | 
+        echo ' ${{ secrets.GCP_SA_DVC_KEY }}'  > gcp-key.json
+        chmod 600 gcp-key.json
+    
+    - name: DVC setup
+      run: |
+        dvc remote add -d -f myremote ${{ secrets.GCP_DVC_BUCKET }}
+        dvc remote modify --local myremote credentialpath  "gcp-key.json"
+  
+    - name: DVC pull
+      run: |
+        cd researchAI
+        dvc pull
+    
+    - name: Copy data
+      run: | 
+        cp -r composer_sync/data/* researchAI/data/
+
+    - name: Sync logs folder
+      run: |
+        mkdir -p composer_sync/logs
+        gsutil -m rsync -r "gs://composer-logs-bucket-mlops-gcp-lab1/" composer_sync/logs
+    
+    - name: Copy logs
+      run: | 
+        if [ -d "composer_sync/logs" ] && [ "$(ls -A composer_sync/logs)" ]; then
+            cp -r composer_sync/logs/* researchAI/logs/
+        else
+            echo "No logs to copy."
+        fi
+
+    - name: dvc add and push
+      run: |
+        cd researchAI
+        dvc add data/
+        dvc add logs/
+        dvc push
+    
+    - name: git add and commit
+      run: |
+        cd researchAI
+        git status
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+        git add  data.dvc logs.dvc
+        if git diff --cached --quiet; then
+            echo "No staged changes found."
+        else
+          echo "Staged changes found."
+          git commit -m "Sync data from Cloud Composer $(date +'%Y-%m-%d %H:%M:%S')" || echo "No changes to commit"
+          git push
+        fi
+      

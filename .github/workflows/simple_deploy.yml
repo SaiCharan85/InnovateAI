@@ -1,0 +1,136 @@
+name: Simple Deploy to GKE
+
+on:
+  workflow_run:
+    workflows: ["Simple RAG Model CI/CD"]
+    types: ["completed"]
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER: rag-cluster
+  GKE_ZONE: us-central1-a
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    # Add debug step to see directory structure
+    - name: Debug - List directory structure
+      run: |
+        echo "Current directory:"
+        pwd
+        echo "Directory contents:"
+        ls -la
+        echo "Checking for model directory:"
+        find . -name "model" -type d
+    
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+    
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+
+    - name: Install gke-gcloud-auth-plugin
+      run: |
+        gcloud components install gke-gcloud-auth-plugin --quiet
+
+    - name: Check if cluster exists
+      id: check_cluster
+      run: |
+        if gcloud container clusters describe rag-cluster --zone=us-central1-a --project=${{ secrets.GCP_PROJECT_ID }} &>/dev/null; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create GKE cluster
+      if: steps.check_cluster.outputs.exists == 'false'
+      run: |
+        gcloud container clusters create rag-cluster \
+          --zone us-central1-a \
+          --num-nodes 2 \
+          --machine-type n1-standard-2 \
+          --disk-size 50 \
+          --enable-autoscaling \
+          --min-nodes 2 \
+          --max-nodes 4 \
+          --scopes=https://www.googleapis.com/auth/cloud-platform \
+          --project ${{ secrets.GCP_PROJECT_ID }}
+
+    - name: Get GKE Credentials
+      run: |
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} \
+          --zone=${{ env.GKE_ZONE }} \
+          --project=${{ secrets.GCP_PROJECT_ID }}
+
+    - name: Configure Docker
+      run: |
+        gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+    - name: Deploy namespace to Kubernetes
+      run: |
+        cd researchAI
+        kubectl apply -f k8s/namespace.yml
+
+    - name: Build and Push Frontend
+      run: |
+        cd researchAI/frontend
+        docker buildx build --platform linux/amd64 \
+          -t us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/rag-docker/frontend:latest \
+          . --push
+    
+    - name: Build and Push Backend
+      run: |
+        # Based on your files, the model directory is at the root
+        # Not inside researchAI/model
+        cd researchAI/model
+        docker buildx build --platform linux/amd64 \
+          -t us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/rag-docker/backend:latest \
+          . --push
+
+    - name: Delete existing deployment if any
+      run: |
+        kubectl delete deployment rag-frontend rag-backend -n rag-system --ignore-not-found=true
+
+    - name: Create backend secret
+      run: |
+        kubectl delete secret backend-secret -n rag-system --ignore-not-found=true
+        kubectl create secret generic backend-secret \
+          --from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}" \
+          --from-literal=GCP_PROJECT_ID="${{ secrets.GCP_PROJECT_ID }}" \
+          -n rag-system
+  
+    - name: Deploy to Kubernetes
+      run: |
+        cd researchAI
+        kubectl apply -f k8s/backend.yml
+        kubectl apply -f k8s/frontend.yml
+    
+    - name: Wait for deployment
+      run: |
+        kubectl wait --for=condition=available --timeout=600s \
+          deployment/rag-backend -n rag-system
+        kubectl wait --for=condition=available --timeout=600s \
+          deployment/rag-frontend -n rag-system
+
+    - name: Check pod status
+      run: |
+        kubectl get pods -n rag-system
+    
+    - name: Get service URLs
+      run: |
+        echo "Backend URL:"
+        kubectl get service rag-backend -n rag-system -o wide
+        echo ""
+        echo "Frontend URL:"
+        kubectl get service rag-frontend -n rag-system -o wide
+        echo ""
+        echo "To access services, get the external IPs:"
+        kubectl get services -n rag-system 

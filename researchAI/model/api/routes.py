@@ -1,0 +1,268 @@
+import logging
+import time
+from typing import Callable
+from datetime import datetime
+
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+from monitoring.monitor import SimpleMonitor
+
+from api.schemas import (
+    QueryRequest, QueryResponse, HealthResponse, MetricsResponse,
+    Source, BiasReport
+)
+
+logger = logging.getLogger(__name__)
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
+# In-memory metrics storage (in production, use Redis or database)
+metrics_store = {
+    "total_queries": 0,
+    "total_response_time": 0.0,
+    "total_validation_score": 0.0,
+    "total_fairness_score": 0.0,
+    "cache_hits": 0,
+    "start_time": time.time()
+}
+
+from config.settings import config 
+
+def create_api_router(get_pipeline: Callable) -> APIRouter:
+    """
+    Create API router with dependency injection for pipeline
+    
+    Args:
+        get_pipeline: Function that returns the pipeline instance
+        
+    Returns:
+        Configured APIRouter
+    """
+    router = APIRouter()
+    
+    # ===== Health Check Endpoint =====
+    @router.get("/health", response_model=HealthResponse, tags=["monitoring"])
+    async def health_check():
+        """
+        Health check endpoint for Kubernetes liveness/readiness probes
+        """
+        pipeline = get_pipeline()
+        
+        if pipeline is None:
+            raise HTTPException(status_code=503, detail="Pipeline not initialized")
+        
+        # Get index stats if available
+        index_stats = None
+        indexes_loaded = False
+        
+        try:
+            index_stats = pipeline.retriever.get_index_stats()
+            indexes_loaded = True
+        except Exception as e:
+            logger.warning(f"Could not get index stats: {e}")
+        
+        return HealthResponse(
+            status="healthy",
+            pipeline_loaded=True,
+            indexes_loaded=indexes_loaded,
+            index_stats=index_stats
+        )
+
+    @router.post("/monitor/establish-baseline", tags=["monitoring"])
+    async def establish_baseline():
+        """Create performance baseline"""
+        try:
+            monitor = SimpleMonitor()
+            baseline = monitor.establish_baseline()
+            
+            if baseline:
+                return {
+                    "status": "success",
+                    "baseline": baseline
+                }
+            else:
+                return {
+                    "status": "failed",
+                    "message": "Need at least 50 queries"
+                }
+        except Exception as e:
+            logger.error(f"Error establishing baseline: {e}")
+            return {"status": "error", "message": str(e)}
+    
+
+    @router.post("/query", response_model=QueryResponse, tags=["query"])
+    @limiter.limit(config.fastapi.rate_limit_query)
+    async def query(
+        request: Request,
+        query_request: QueryRequest,
+        background_tasks: BackgroundTasks
+    ):
+        """Process a RAG query"""
+        pipeline = get_pipeline()
+        
+        if pipeline is None:
+            raise HTTPException(status_code=503, detail="Pipeline not initialized")
+        
+        logger.info(f"Processing query: {query_request.query[:100]}...")
+        
+        try:
+            # Process query
+            result = pipeline.query(
+                query=query_request.query,
+                filters=query_request.filters,
+                enable_streaming=query_request.enable_streaming
+            )
+            
+            # Extract values with safe defaults
+            response_time = result.get('response_time', 0.0)
+            validation = result.get('validation', {})
+            validation_score = validation.get('overall_score', 0.0)
+            bias_report = result.get('bias_report', {})
+            fairness_score = bias_report.get('overall_fairness_score', 0.0)
+            from_cache = result.get('from_cache', False)
+            
+            # Handle sources safely
+            sources_list = []
+            for source_data in result.get('sources', []):
+                try:
+                    source_obj = Source(
+                        number=source_data.get('number', 0),
+                        title=source_data.get('title', 'Unknown'),
+                        source=source_data.get('source', 'Unknown'),
+                        date=source_data.get('date', 'N/A'),
+                        url=source_data.get('url', ''),
+                        relevance_score=source_data.get('relevance_score', 0.0),
+                        excerpt=source_data.get('excerpt', '')
+                    )
+                    sources_list.append(source_obj)
+                except Exception as e:
+                    logger.warning(f"Failed to parse source: {e}")
+                    continue
+            
+            # Handle BiasReport with all required fields
+            if bias_report and isinstance(bias_report, dict):
+                bias_report_data = {
+                    'overall_fairness_score': bias_report.get('overall_fairness_score', 0.0),
+                    'diversity_metrics': bias_report.get('diversity_metrics', {}),
+                    'warnings': bias_report.get('warnings', []),
+                    'query_characteristics': bias_report.get('query_characteristics', {}),
+                    'fairness_indicators': bias_report.get('fairness_indicators', {}),
+                    'evaluation_type': bias_report.get('evaluation_type', 'standard'),
+                    'timestamp': bias_report.get('timestamp', datetime.now().isoformat())
+                }
+                bias_report_obj = BiasReport(**bias_report_data)
+            else:
+                bias_report_obj = BiasReport(
+                    overall_fairness_score=0.0,
+                    diversity_metrics={},
+                    warnings=[],
+                    query_characteristics={},
+                    fairness_indicators={},
+                    evaluation_type='standard',
+                    timestamp=datetime.now().isoformat()
+                )
+            
+            # CREATE RESPONSE OBJECT FIRST (before background tasks)
+            response = QueryResponse(
+                query=result.get('query', query_request.query),
+                response=result.get('response', ''),
+                sources=sources_list,
+                num_sources=len(sources_list),
+                bias_report=bias_report_obj,
+                validation=validation,
+                metrics=result.get('metrics', {}),
+                response_time=response_time,
+                from_cache=from_cache
+            )
+            
+            # NOW add background tasks AFTER response is created
+            background_tasks.add_task(
+                update_metrics,
+                response_time,
+                validation_score,
+                fairness_score,
+                from_cache
+            )
+            
+            # Add monitoring in background
+            background_tasks.add_task(log_to_monitor, result)  # Pass result, not response
+            
+            logger.info(f"Query processed successfully in {response_time:.2f}s")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error processing query: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")    
+
+    # ===== Metrics Endpoint =====
+    @router.get("/metrics", response_model=MetricsResponse, tags=["monitoring"])
+    async def get_metrics():
+        """
+        Get aggregated system metrics
+        """
+        total_queries = metrics_store["total_queries"]
+        
+        if total_queries == 0:
+            return MetricsResponse(
+                total_queries=0,
+                avg_response_time=0.0,
+                avg_validation_score=0.0,
+                avg_fairness_score=0.0,
+                cache_hit_rate=0.0,
+                uptime=time.time() - metrics_store["start_time"]
+            )
+        
+        return MetricsResponse(
+            total_queries=total_queries,
+            avg_response_time=metrics_store["total_response_time"] / total_queries,
+            avg_validation_score=metrics_store["total_validation_score"] / total_queries,
+            avg_fairness_score=metrics_store["total_fairness_score"] / total_queries,
+            cache_hit_rate=metrics_store["cache_hits"] / total_queries,
+            uptime=time.time() - metrics_store["start_time"]
+        )
+    
+
+    @router.get("/monitor/health", tags=["monitoring"])
+    async def monitor_health():
+        """Check model health"""
+        try:
+            monitor = SimpleMonitor()
+            health = monitor.check_health()
+            return health
+        except Exception as e:
+            logger.error(f"Error checking health: {e}")
+            return {"status": "ERROR", "message": str(e)}
+    
+  
+    return router
+
+def log_to_monitor(result: dict):
+    """Log query result to monitoring"""
+    try:
+        from monitoring.monitor import SimpleMonitor
+        monitor = SimpleMonitor()
+        monitor.log_query(result)
+    except Exception as e:
+        logger.error(f"Error logging to monitor: {e}")
+
+def update_metrics(response_time: float, validation_score: float, 
+                   fairness_score: float, from_cache: bool):
+    """
+    Update metrics store
+    
+    Args:
+        response_time: Query response time
+        validation_score: Validation score
+        fairness_score: Fairness score
+        from_cache: Whether result was from cache
+    """
+    metrics_store["total_queries"] += 1
+    metrics_store["total_response_time"] += response_time
+    metrics_store["total_validation_score"] += validation_score
+    metrics_store["total_fairness_score"] += fairness_score
+    
+    if from_cache:
+        metrics_store["cache_hits"] += 1

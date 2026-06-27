@@ -1,0 +1,15 @@
+pandas
+scikit-learn
+torch
+transformers
+sentencepiece
+kneed
+requests
+apache-airflow-providers-postgres
+great-expectations==0.18.8
+sqlalchemy
+beautifulsoup4
+lxml
+html5lib
+fairlearn
+dvc[gs]

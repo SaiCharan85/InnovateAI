@@ -1,0 +1,195 @@
+name: Simple RAG Model CI/CD
+
+on:
+  push: 
+    branches:
+      - main
+  schedule:
+    - cron: '0 1 * * *'   # Every day at midnight (1:00 AM)
+
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.11'
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_LOCATION: 'us-central1'
+  GCP_REPOSITORY: 'rag-models'
+
+permissions:
+  contents: write
+
+jobs:
+  evaluate-and-push:
+    name: Evaluate Model & Push to Registry
+    runs-on: ubuntu-latest
+    environment: mlops
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with: 
+          lfs: true
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r researchAI/model/requirements.txt
+
+      - name: Download NLTK data
+        run: |
+          python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab'); nltk.download('stopwords')"
+
+      - name: Set up GCP credentials
+        run: | 
+          echo ' ${{ secrets.GCP_SA_DVC_KEY }}'  > gcp-key.json
+          chmod 600 gcp-key.json
+    
+      - name: Configure DVC remote
+        run: |
+          dvc remote add -d -f myremote ${{ secrets.GCP_DVC_BUCKET }}
+          dvc remote modify --local myremote credentialpath  "gcp-key.json"
+  
+      - name: DVC Pull
+        run: | 
+          cd researchAI
+          ls -alth
+          dvc pull
+
+      - name: Check if data folder exists
+        run: |
+          if [ ! -d "researchAI/data/cleaned" ] || [ -z "$(ls -A researchAI/data/cleaned)" ]; then
+            echo "⚠️ No data files found in cleaned folder. Nothing to index."
+            echo "has_data=false" >> $GITHUB_OUTPUT
+          else
+            echo " Data folder exists with files. Proceeding with indexing..."
+            echo "has_data=true" >> $GITHUB_OUTPUT
+          fi
+        id: check_data
+
+      - name: Authenticate to Google Cloud
+        if: steps.check_data.outputs.has_data == 'true'
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+        continue-on-error: false
+
+      - name: Run Indexing Script
+        if: steps.check_data.outputs.has_data == 'true'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/researchAI/model
+        run: |
+          cd researchAI/model
+          cd faiss_indexes
+          ls -alth
+          cd ..
+          python indexing_script.py
+          cd ../..
+      
+      - name: DVC Push after Indexing
+        if: steps.check_data.outputs.has_data == 'true'
+        run: |
+          cd researchAI
+          chmod +x dvc/dvc.sh
+          ./dvc/dvc.sh
+        continue-on-error: false
+      
+      - name: Dvc file add to git repo
+        if: steps.check_data.outputs.has_data == 'true'
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+          cd researchAI
+          git add data.dvc
+          git add logs.dvc
+          git commit -m "Updated dvc ref"
+          git push
+      
+      - name: Set up Google Cloud SDK
+        if: steps.check_data.outputs.has_data == 'true'
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+        continue-on-error: true
+      
+      - name: Run Complete Evaluation Pipeline
+        if: steps.check_data.outputs.has_data == 'true'
+        continue-on-error: true
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          PYTHONPATH: ${{ github.workspace }}/researchAI/model
+        run: |
+          cd researchAI/model
+          
+          PUSH_FLAG="--push-to-registry"
+          echo "Will push to Artifact Registry if passed"
+          
+          python evaluation/simple_evaluate.py \
+            --test-data test_queries_with_expected.csv \
+            --output evaluation_report.json \
+            $PUSH_FLAG \
+            --project-id ${{ env.GCP_PROJECT_ID }} \
+            --location ${{ env.GCP_LOCATION }} \
+            --repository ${{ env.GCP_REPOSITORY }}
+          
+          if [ -f artifact_path.txt ]; then
+            cp artifact_path.txt ${{ github.workspace }}/artifact_path.txt
+          fi
+          cp evaluation_report.json ${{ github.workspace }}/evaluation_report.json
+        id: evaluation
+
+      - name: Check Evaluation Status
+        if: steps.check_data.outputs.has_data == 'true'
+        id: check_evaluation
+        run: |
+          if [ -f evaluation_report.json ]; then
+            STATUS=$(jq -r '.aggregate_metrics.status' evaluation_report.json)
+            echo "status=$STATUS" >> $GITHUB_OUTPUT
+            if [ "$STATUS" = "FAILED" ]; then
+              echo "⚠️ Model evaluation FAILED thresholds."
+              echo "evaluation_passed=false" >> $GITHUB_OUTPUT
+            else
+              echo " Model evaluation PASSED thresholds."
+              echo "evaluation_passed=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "evaluation_passed=false" >> $GITHUB_OUTPUT
+            echo "status=FAILED" >> $GITHUB_OUTPUT
+          fi
+        
+      - name: Upload evaluation report
+        if: steps.check_data.outputs.has_data == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-report
+          path: evaluation_report.json 
+          retention-days: 90
+
+      - name: Send Failure Email
+        if: |
+          steps.check_data.outputs.has_data == 'true' && 
+          steps.check_evaluation.outputs.evaluation_passed == 'false'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: "⚠️ RAG Model Evaluation FAILED - ${{ github.ref_name }}"
+          to: ${{ secrets.DEVELOPER_EMAIL }}
+          from: RAG Model CI/CD
+          body: |
+            RAG Model Evaluation FAILED
+
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            Run: ${{ github.run_number }}
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            VIEW FULL DETAILS
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        continue-on-error: true
