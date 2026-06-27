@@ -14,6 +14,7 @@ from utils.logger import setup_logging
 from deployment.artifact_registry_pusher import ArtifactRegistryPusher
 from config.settings import config
 from pathlib import Path
+from utils.runtime_config import resolve_runtime_config
 logger = logging.getLogger(__name__)
 
 class TechTrendsRAGPipeline:
@@ -41,14 +42,16 @@ class TechTrendsRAGPipeline:
         self.validator = ResponseValidator()
         self.fairness_detector = RAGBiasDetector()
         self.metrics_calculator = RAGMetrics()
-        self.project_id = config.gcp_config.project_id
-        self.location = config.gcp_config.location
-        self.repository = config.gcp_config.artifact_repository
+        self.project_id, self.location, self.repository = resolve_runtime_config(
+            project_id=config.gcp_config.project_id,
+            location=config.gcp_config.location,
+            repository=config.gcp_config.artifact_repository,
+        )
         self.tracker = ExperimentTracker() if enable_tracking else None
         self.logger.info(f"Tracker is {'enabled' if self.tracker else 'not enabled!'}")
         self.logger.info("Pipeline initialized successfully")
         if not self.project_id:
-            raise ValueError("GCP project_id is required")
+            self.logger.warning("GCP project_id was not provided; continuing in local-only mode")
         self.monitoring = None
         if enable_monitoring:
             self._initialize_monitoring()
