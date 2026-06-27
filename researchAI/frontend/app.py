@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 # Import custom components
-from components.chat import display_message
+from components.chat import display_message, render_chat_interface
 from components.sidebar import render_sidebar
 from utils.api_client import APIClient
 
@@ -192,7 +192,14 @@ def main():
     init_session_state()
     
     # Title
-    st.title("Tech Trends RAG Assistant")
+    st.title("ResearchAI Assistant ✨")
+    st.caption("Explore technology trends, research papers, and news in one place.")
+    st.caption("Tip: ask for a topic, a recent paper, or a trend comparison.")
+    
+    if not st.session_state.messages:
+        st.info("Try asking about recent AI breakthroughs, topic clusters, or source quality.")
+    
+    render_chat_interface()
     
     # Sidebar
     sidebar_config = render_sidebar()
@@ -235,7 +242,8 @@ def main():
         display_message(message)
     
     # Query input
-    query = st.chat_input("Ask about technology trends...")
+    query = st.chat_input("Ask about technology trends, papers, or news...")
+    st.caption("Responses may include sources, fairness notes, and retrieval metrics.")
     
     if query:
         # Add user message

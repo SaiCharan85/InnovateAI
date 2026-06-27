@@ -12,6 +12,8 @@ def render_metrics_dashboard():
     
     # Placeholder for system-wide metrics
     st.info("System-wide metrics will be displayed here")
+    st.caption("Use this space to review retrieval coverage, fairness quality, and response stability.")
+    st.caption("Add charts here as your monitoring setup grows.")
 
 
 def render_response_metrics(metrics: Dict[str, Any]):

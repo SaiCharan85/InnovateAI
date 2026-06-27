@@ -11,9 +11,10 @@ def render_sidebar() -> Dict[str, Any]:
     """
     with st.sidebar:
         # New Chat Button at the top
-        st.markdown("### 💬 Tech Trends RAG")
+        st.markdown("### 💬 ResearchAI")
+        st.caption("Your topic-aware research and trends workspace")
         
-        if st.button("➕ New Chat", use_container_width=True):
+        if st.button("➕ Start Fresh", use_container_width=True):
             st.session_state.messages = []
             st.session_state.current_response = None
             st.rerun()
@@ -22,6 +23,8 @@ def render_sidebar() -> Dict[str, Any]:
         
         # Chat History
         st.markdown("### 📜 Recent Chats")
+        st.caption("Your latest conversations appear here for quick revisits.")
+        st.caption("Open an old chat to continue the thread.")
         
         if 'query_history' in st.session_state and st.session_state.query_history:
             for idx, item in enumerate(reversed(st.session_state.query_history[-20:])):  # Show last 20

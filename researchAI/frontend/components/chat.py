@@ -4,6 +4,8 @@ from typing import Dict, Any
 
 def render_chat_interface():
     st.header("💬 Chat")
+    st.caption("Start a conversation and inspect the supporting sources below each answer.")
+    st.caption("Follow up with a narrower question to refine the results.")
 
 def display_message(message: Dict[str, Any]):
     """
@@ -28,6 +30,10 @@ def display_message(message: Dict[str, Any]):
             
             # Display sources if available
             sources = message.get("sources", [])
+            if sources:
+                st.caption(f"Supporting sources: {len(sources)}")
+            if not sources:
+                st.caption("No supporting sources were returned for this response.")
             if sources:
                 with st.expander(f"📚 Sources ({len(sources)})", expanded=False):
                     for source in sources:
