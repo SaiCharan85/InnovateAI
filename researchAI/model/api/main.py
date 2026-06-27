@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from pipeline import TechTrendsRAGPipeline
 from api.routes import create_api_router
+from api.mcp_routes import router as mcp_router
 from utils.logger import setup_logging
 import mlflow
 
@@ -138,6 +139,11 @@ app.include_router(
     create_api_router(lambda: pipeline),
     prefix="/api",
     tags=["api"]
+)
+app.include_router(
+    mcp_router,
+    prefix="/api/mcp",
+    tags=["mcp"]
 )
 
 
