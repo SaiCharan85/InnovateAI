@@ -15,23 +15,31 @@ class MCPToolService:
         }
 
     def search_documents(self, query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Search documents by a simple keyword match."""
+        """Search documents with keyword and research-aware boosting."""
         query_terms = re.findall(r"\w+", query.lower())
         if not query_terms:
             return documents
 
         results: List[Dict[str, Any]] = []
         for document in documents:
-            text = " ".join(
-                [
-                    str(document.get("title", "")),
-                    str(document.get("content", "")),
-                    str(document.get("topic", "")),
-                ]
-            ).lower()
+            text_parts = [
+                str(document.get("title", "")),
+                str(document.get("content", "")),
+                str(document.get("topic", "")),
+            ]
+            metadata_keywords = document.get("metadata", {}).get("search_keywords", [])
+            if isinstance(metadata_keywords, list):
+                text_parts.extend([str(keyword) for keyword in metadata_keywords])
+
+            text = " ".join(text_parts).lower()
             score = sum(1 for term in query_terms if term in text)
-            if score:
-                results.append({**document, "match_score": score})
+
+            research_boost = 0
+            if document.get("topic") == "research" or "paper" in text or "research" in text:
+                research_boost = 1
+
+            if score or research_boost:
+                results.append({**document, "match_score": score + research_boost})
 
         results.sort(key=lambda item: item.get("match_score", 0), reverse=True)
         return results

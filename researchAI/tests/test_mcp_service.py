@@ -26,3 +26,25 @@ def test_build_topic_graph_creates_structure():
     assert graph["center_topic"] == "ai"
     assert any(node["id"] == "ai" for node in graph["nodes"])
     assert len(graph["edges"]) >= 1
+
+
+def test_search_prioritizes_research_keywords():
+    service = MCPToolService()
+    documents = [
+        {
+            "title": "News roundup on AI hardware",
+            "content": "A brief news summary about hardware launches.",
+            "topic": "news",
+            "metadata": {"search_keywords": ["hardware", "launch"]},
+        },
+        {
+            "title": "A survey of retrieval augmented generation",
+            "content": "A research paper about retrieval augmented generation methods.",
+            "topic": "research",
+            "metadata": {"search_keywords": ["retrieval", "augmented", "generation", "paper"]},
+        },
+    ]
+
+    results = service.search_documents("retrieval augmented generation research paper", documents)
+
+    assert results[0]["title"] == "A survey of retrieval augmented generation"
