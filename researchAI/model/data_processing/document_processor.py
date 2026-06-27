@@ -1,6 +1,6 @@
 from typing import Dict, List, Any
-from datetime import datetime, timedelta
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +12,18 @@ class DocumentProcessor:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
     
+    def _build_keywords(self, title: str, content: str, categories: List[str]) -> List[str]:
+        """Create a lightweight keyword list from the document text and categories."""
+        combined = f"{title} {content} {' '.join(categories)}"
+        tokens = re.findall(r"[a-zA-Z0-9]+", combined.lower())
+        keywords = []
+        seen = set()
+        for token in tokens:
+            if len(token) >= 3 and token not in seen:
+                keywords.append(token)
+                seen.add(token)
+        return keywords[:12]
+
     def process_arxiv_paper(self, paper: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process arXiv paper into standardized format
@@ -24,6 +36,8 @@ class DocumentProcessor:
         """
         try:
             content = f"Title: {paper['title']}\n\nAbstract: {paper['abstract']}"
+            categories = paper.get('all_categories', []) or [paper.get('primary_category', 'artificial_intelligence')]
+            keywords = self._build_keywords(paper['title'], paper.get('abstract', ''), categories)
             
             return {
                 'doc_id': paper['arxiv_id'],
@@ -37,9 +51,11 @@ class DocumentProcessor:
                     'author_count': paper.get('author_count', 0),
                     'published_date': paper['published_date'],
                     'updated_date': paper.get('updated_date', paper['published_date']),
-                    'categories': paper.get('all_categories', []),
+                    'categories': categories,
                     'primary_category': paper.get('primary_category', 'artificial_intelligence'),
                     'relevance_score': paper.get('overall_relevance', 0.0),
+                    'keywords': keywords,
+                    'topic_tags': [paper.get('primary_category', 'artificial_intelligence')] + categories[:3],
                     'category_scores': paper.get('category_scores', {}),
                     'pdf_url': paper.get('pdf_url', ''),
                     'html_url': paper.get('html_url', ''),
@@ -62,6 +78,8 @@ class DocumentProcessor:
         """
         try:
             content = f"Title: {article['title']}\n\n{article.get('description', '')}"
+            categories = article.get('all_categories', []) or [article.get('primary_category', 'general')]
+            keywords = self._build_keywords(article['title'], article.get('description', ''), categories)
             
             return {
                 'doc_id': article['article_id'],
@@ -76,9 +94,11 @@ class DocumentProcessor:
                     'published_at': article['published_at'],
                     'url': article.get('url', ''),
                     'image_url': article.get('image_url', ''),
-                    'categories': article.get('all_categories', []),
+                    'categories': categories,
                     'primary_category': article.get('primary_category', 'general'),
                     'relevance_score': article.get('overall_relevance', 0.0),
+                    'keywords': keywords,
+                    'topic_tags': [article.get('primary_category', 'general')] + categories[:3],
                     'category_scores': article.get('category_scores', {}),
                     'source': 'News'  
                 }

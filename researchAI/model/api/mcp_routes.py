@@ -29,3 +29,10 @@ async def mcp_graph(payload: Dict[str, Any]) -> Dict[str, Any]:
     documents = payload.get("documents", [])
     graph = service.build_topic_graph(topic, documents)
     return graph
+
+
+@router.post("/mcp/expand")
+async def mcp_expand(payload: Dict[str, Any]) -> Dict[str, Any]:
+    topic = str(payload.get("topic", ""))
+    documents = payload.get("documents", [])
+    return service.expand_topic(topic, documents)

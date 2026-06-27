@@ -12,6 +12,7 @@ class MCPToolService:
             "search_documents": self.search_documents,
             "get_related_topics": self.get_related_topics,
             "build_topic_graph": self.build_topic_graph,
+            "expand_topic": self.expand_topic,
         }
 
     def search_documents(self, query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -74,6 +75,16 @@ class MCPToolService:
                 related.append({"topic": doc_topic, "title": document.get("title", "")})
 
         return related
+
+    def expand_topic(self, topic: str, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Expand a topic into related topics and matching documents."""
+        related_topics = self.get_related_topics(topic, documents)
+        matched_documents = self.search_documents(topic, documents)
+        return {
+            "topic": topic,
+            "related_topics": related_topics,
+            "documents": matched_documents[:5],
+        }
 
     def build_topic_graph(
         self,
